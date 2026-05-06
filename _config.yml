@@ -1,0 +1,49 @@
+# Jekyll configuration for GitHub Pages
+title: Zip Launcher for Local
+description: Drop a WordPress theme or plugin zip anywhere in Local to create a site instantly.
+baseurl: "/local-addon-zip-launcher"
+url: "https://jpollock.github.io"
+
+# Theme
+remote_theme: pages-themes/hacker@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+# Markdown processing
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+  syntax_highlighter: rouge
+
+# Permalinks
+permalink: pretty
+
+# Navigation
+navigation:
+  - title: Home
+    url: /
+  - title: User Guide
+    url: /docs/USER_GUIDE/
+  - title: Developer Guide
+    url: /docs/DEVELOPER_GUIDE/
+  - title: Troubleshooting
+    url: /docs/TROUBLESHOOTING/
+
+# Exclude from Jekyll processing
+exclude:
+  - node_modules
+  - lib
+  - src
+  - tests
+  - scripts
+  - coverage
+  - "*.json"
+  - "*.ts"
+  - "*.js"
+  - ".github"
+  - ".eslintrc.json"
+  - ".prettierrc"
+  - "tsconfig.json"
+  - "jest.config.js"
+  - "package-lock.json"

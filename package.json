@@ -1,7 +1,7 @@
 {
   "name": "local-addon-zip-launcher",
   "productName": "Zip Launcher",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Drop a WordPress theme or plugin zip anywhere in Local to create a site with it installed and activated.",
   "main": "lib/main.js",
   "renderer": "lib/renderer.js",

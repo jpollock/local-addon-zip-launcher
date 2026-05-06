@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-06
+
+### Added
+- Bundle detection — zips containing multiple components (theme + plugin) under a common wrapper directory are now fully handled
+- `stripCommonPrefix` strips wrapper directories (e.g. `wp/`) before detection, fixing depth issues
+- All detected components installed on one site in a single drop: plugins first, then themes
+- Site name derived from component names, deduplicated and joined (e.g. `markshare` or `astra-woocommerce`)
+- Extract-then-activate install pattern for bundles (no re-zipping required)
+- Collision detection checks all bundle components
+
 ## [0.3.0] - 2026-05-06
 
 ### Added

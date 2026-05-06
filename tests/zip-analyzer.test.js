@@ -2,7 +2,7 @@
 
 const path = require('path');
 const os = require('os');
-const { validateFilePath, parseHeader, slugify, getUniqueSlug } = require('../lib/zip-analyzer');
+const { validateFilePath, parseHeader, extractFolder, isWxr, findWxrCandidates, slugify, getUniqueSlug } = require('../lib/zip-analyzer');
 
 // ---------------------------------------------------------------------------
 // validateFilePath
@@ -69,6 +69,87 @@ describe('parseHeader', () => {
 	test('trims trailing whitespace from the value', () => {
 		const css = `Theme Name: Clean   `;
 		expect(parseHeader(css, 'Theme Name')).toBe('Clean');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// extractFolder
+// ---------------------------------------------------------------------------
+
+describe('extractFolder', () => {
+	test('returns the root folder from a single-root zip', () => {
+		expect(extractFolder(['pm-bulletin/style.css', 'pm-bulletin/functions.php'])).toBe('pm-bulletin');
+	});
+
+	test('works for depth-1 root files (flat zip)', () => {
+		expect(extractFolder(['style.css', 'functions.php'])).toBe('style.css');
+	});
+
+	test('returns first component of a deeply nested entry', () => {
+		expect(extractFolder(['my-theme/demo/content.xml'])).toBe('my-theme');
+	});
+
+	test('returns empty string for an empty names array', () => {
+		expect(extractFolder([])).toBe('');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isWxr
+// ---------------------------------------------------------------------------
+
+describe('isWxr', () => {
+	test('returns true for text containing both WXR markers', () => {
+		const wxr = '<?xml version="1.0"?>\n<rss version="2.0" xmlns:excerpt="http://wordpress.org/export/">';
+		expect(isWxr(wxr)).toBe(true);
+	});
+
+	test('returns false when rss marker is absent', () => {
+		const notWxr = '<?xml version="1.0"?>\n<feed xmlns:excerpt="http://wordpress.org/export/">';
+		expect(isWxr(notWxr)).toBe(false);
+	});
+
+	test('returns false when xmlns:excerpt marker is absent', () => {
+		const notWxr = '<?xml version="1.0"?>\n<rss version="2.0">';
+		expect(isWxr(notWxr)).toBe(false);
+	});
+
+	test('returns false for empty string', () => {
+		expect(isWxr('')).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// findWxrCandidates
+// ---------------------------------------------------------------------------
+
+describe('findWxrCandidates', () => {
+	test('includes xml files at depth 1', () => {
+		expect(findWxrCandidates(['demo.xml'])).toEqual(['demo.xml']);
+	});
+
+	test('includes xml files at depth 3', () => {
+		expect(findWxrCandidates(['theme/demo/content.xml'])).toEqual(['theme/demo/content.xml']);
+	});
+
+	test('excludes xml files deeper than depth 3', () => {
+		expect(findWxrCandidates(['a/b/c/d.xml'])).toEqual([]);
+	});
+
+	test('excludes non-xml files', () => {
+		expect(findWxrCandidates(['theme/demo/content.json'])).toEqual([]);
+	});
+
+	test('excludes entries with path traversal', () => {
+		expect(findWxrCandidates(['../evil.xml'])).toEqual([]);
+	});
+
+	test('excludes absolute paths', () => {
+		expect(findWxrCandidates(['/etc/passwd.xml'])).toEqual([]);
+	});
+
+	test('is case-insensitive for the .xml extension', () => {
+		expect(findWxrCandidates(['theme/demo/CONTENT.XML'])).toEqual(['theme/demo/CONTENT.XML']);
 	});
 });
 

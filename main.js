@@ -243,16 +243,7 @@ module.exports = function zipLauncher(context) {
 			}
 
 			if (response === 0) {
-				// Update existing site
-				if (!isSiteRunning(collidingSite)) {
-					logger.info(`[zip-launcher] Site "${collidingSite.name}" is not running`);
-					sendToRenderer('showToast', { toastTrigger: 'import',
-						toastType: 'error',
-						message: `Start "${collidingSite.name}" first, then drop the zip again.`,
-					});
-					return { ok: true };
-				}
-
+				// Update existing site — start it automatically if stopped.
 				const cradle = getCradle();
 				if (!cradle || !cradle.wpCli) {
 					sendToRenderer('showToast', { toastTrigger: 'import',
@@ -260,6 +251,21 @@ module.exports = function zipLauncher(context) {
 						message: 'WP-CLI unavailable — cannot update.',
 					});
 					return { ok: true };
+				}
+
+				if (!isSiteRunning(collidingSite)) {
+					logger.info(`[zip-launcher] Starting "${collidingSite.name}"...`);
+					try {
+						await cradle.siteProcessManager.start(collidingSite);
+						logger.info(`[zip-launcher] "${collidingSite.name}" started`);
+					} catch (err) {
+						logger.error(`[zip-launcher] Could not start site: ${err.message}`);
+						sendToRenderer('showToast', { toastTrigger: 'import',
+							toastType: 'error',
+							message: `Couldn't start "${collidingSite.name}". Start it manually and drop the zip again.`,
+						});
+						return { ok: true };
+					}
 				}
 
 				const cmd = type === 'theme' ? 'theme' : 'plugin';

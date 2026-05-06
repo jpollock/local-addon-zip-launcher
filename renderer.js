@@ -33,6 +33,19 @@ module.exports = function zipLauncherRenderer(_context) {
 		// stopPropagation, so we clear it manually.
 		document.getElementById('root')?.classList.remove('drag');
 
+		// MainDragDrop.isEntered stays true when we stopPropagation, so the
+		// overlay won't appear on the next drag. Reset it by dispatching a
+		// synthetic dragleave that passes MainDragDrop's isFileEvent check.
+		setTimeout(() => {
+			const root = document.getElementById('root');
+			if (!root) return;
+			try {
+				const dt = new DataTransfer();
+				dt.items.add(new File([''], 'x'));
+				root.dispatchEvent(new DragEvent('dragleave', { bubbles: true, dataTransfer: dt }));
+			} catch (_) {}
+		}, 50);
+
 		const filePath = getFilePath(zipFile);
 		if (!filePath) {
 			showToast('Zip Launcher: Could not read file path.');
@@ -76,7 +89,7 @@ module.exports = function zipLauncherRenderer(_context) {
 				siteName: slug,
 				sitePath,
 				siteDomain: `${slug}.local`,
-				multiSite: 'no',
+				multiSite: '', // Local.MultiSite.No = '' (empty string, not 'no')
 			},
 			wpCredentials: {
 				adminUsername: 'admin',

@@ -10,7 +10,8 @@ import {
   slugify,
   getUniqueSlug,
   openZip,
-  ZipAnalysisResult,
+  ZipBundle,
+  ZipComponent,
 } from '../lib/zip-analyzer';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -52,9 +53,8 @@ interface LocalSite {
 
 interface PendingZip {
   filePath: string;
-  type: 'theme' | 'plugin';
-  name: string;
-  folder: string;
+  components: ZipComponent[];  // all detected themes/plugins, plugins first
+  prefix: string;              // common wrapper prefix in the zip (e.g. 'wp/')
   expectedSiteName: string;
   demoContentEntries: string[];
 }
@@ -136,19 +136,57 @@ function getExistingSiteNames(): Set<string> {
   return new Set();
 }
 
-function findCollidingSite(type: 'theme' | 'plugin', folder: string): LocalSite | null {
+/**
+ * Derives a site slug from bundle component names.
+ * Deduplicates (MarkShare + MarkShare → markshare) and joins (Astra + WooCommerce → astra-woocommerce).
+ */
+function slugBundleName(components: ZipComponent[]): string {
+  const slugs = components.map((c) => slugify(c.name));
+  return [...new Set(slugs)].join('-');
+}
+
+/**
+ * Synchronously extracts all entries under `{prefix}{folderName}/` from the zip
+ * into `{destParent}/{folderName}/`, overwriting existing files.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractZipFolderSync(zip: any, prefix: string, folderName: string, destParent: string): void {
+  const entryPrefix = prefix + folderName + '/';
+  const destFolder = path.join(destParent, folderName);
+  fs.mkdirSync(destFolder, { recursive: true });
+
+  const entries: string[] = Object.keys(zip.entries());
+  for (const entry of entries) {
+    if (!entry.startsWith(entryPrefix)) continue;
+    const relativePath = entry.slice(entryPrefix.length);
+    if (!relativePath) continue;
+
+    const destPath = path.join(destFolder, relativePath);
+    if (entry.endsWith('/')) {
+      fs.mkdirSync(destPath, { recursive: true });
+    } else {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      const data = zip.entryDataSync(entry);
+      fs.writeFileSync(destPath, data);
+    }
+  }
+}
+
+function findCollidingSite(components: ZipComponent[]): LocalSite | null {
   const cradle = getCradle();
   if (!cradle) return null;
-  const subdir = type === 'theme' ? 'themes' : 'plugins';
   let sites: LocalSite[];
   try {
     sites = Object.values(cradle.siteData.getSites());
   } catch (_) {
     return null;
   }
-  for (const site of sites) {
-    const checkPath = path.join(site.longPath, 'app', 'public', 'wp-content', subdir, folder);
-    if (fs.existsSync(checkPath)) return site;
+  for (const component of components) {
+    const subdir = component.type === 'theme' ? 'themes' : 'plugins';
+    for (const site of sites) {
+      const checkPath = path.join(site.longPath, 'app', 'public', 'wp-content', subdir, component.folder);
+      if (fs.existsSync(checkPath)) return site;
+    }
   }
   return null;
 }
@@ -241,10 +279,10 @@ export default function zipLauncher(context: AddonContext): void {
     if (!pendingZip) return;
     if (site.name !== pendingZip.expectedSiteName) return;
 
-    const { filePath, type, name, demoContentEntries } = pendingZip;
+    const { filePath, components, prefix, demoContentEntries } = pendingZip;
     clearPendingZip();
 
-    logger.info(`[zip-launcher] Post-install: installing ${type} "${name}" on "${site.name}"`);
+    logger.info(`[zip-launcher] Post-install: installing ${components.length} component(s) on "${site.name}"`);
 
     const cradle = getCradle();
     if (!cradle || !cradle.wpCli) {
@@ -252,29 +290,55 @@ export default function zipLauncher(context: AddonContext): void {
       sendToRenderer('showToast', {
         toastTrigger: 'import',
         toastType: 'error',
-        message: `Couldn't activate "${name}" — WP-CLI unavailable. Install manually from WP admin.`,
+        message: `Couldn't activate components — WP-CLI unavailable. Install manually from WP admin.`,
       });
       sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
       return;
     }
 
-    let installSucceeded = false;
+    // Open zip once for all component extractions.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let zip: any;
     try {
-      const cmd = type === 'theme' ? 'theme' : 'plugin';
-      sendToRenderer('updateSiteMessage', site.id, `Installing ${name}…`);
-      await cradle.wpCli.run(site, [cmd, 'install', filePath, '--activate']);
-      logger.info(`[zip-launcher] Installed and activated ${type} "${name}"`);
-      installSucceeded = true;
+      zip = await openZip(filePath);
     } catch (err) {
-      logger.error('[zip-launcher] WP-CLI install failed', err);
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('[zip-launcher] Could not open zip for extraction', err);
       sendToRenderer('showToast', {
         toastTrigger: 'import',
         toastType: 'error',
-        message: `Couldn't install "${name}". Install manually from WP admin. Zip: ${filePath}`,
+        message: `Couldn't open zip for installation: ${message}`,
       });
+      sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
+      return;
     }
 
-    if (installSucceeded) {
+    let anyInstalled = false;
+    try {
+      for (const component of components) {
+        const subdir = component.type === 'theme' ? 'themes' : 'plugins';
+        const destParent = path.join(site.longPath, 'app', 'public', 'wp-content', subdir);
+        sendToRenderer('updateSiteMessage', site.id, `Installing ${component.name}…`);
+        try {
+          extractZipFolderSync(zip, prefix, component.folder, destParent);
+          await cradle.wpCli.run(site, [component.type, 'activate', component.folder]);
+          logger.info(`[zip-launcher] Activated ${component.type} "${component.name}"`);
+          anyInstalled = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error(`[zip-launcher] Failed to install ${component.type} "${component.name}": ${message}`);
+          sendToRenderer('showToast', {
+            toastTrigger: 'import',
+            toastType: 'error',
+            message: `Couldn't install ${component.type} "${component.name}": ${message}`,
+          });
+        }
+      }
+    } finally {
+      zip.close();
+    }
+
+    if (anyInstalled) {
       await importDemoContent(filePath, demoContentEntries || [], site, cradle.wpCli, logger);
     }
     sendToRenderer('updateSiteMessage', site.id, null);
@@ -292,31 +356,34 @@ export default function zipLauncher(context: AddonContext): void {
 
     logger.info(`[zip-launcher] Analyzing: ${filePath}`);
 
-    let detected: ZipAnalysisResult | null;
+    let bundle: ZipBundle | null;
     try {
-      detected = await analyzeZip(filePath);
+      bundle = await analyzeZip(filePath);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`[zip-launcher] analyzeZip error: ${message}`);
       return { passthrough: true };
     }
 
-    if (!detected) {
+    if (!bundle) {
       logger.info('[zip-launcher] Not a theme or plugin zip — passing through');
       return { passthrough: true };
     }
 
-    const { type, name, folder, demoContentEntries } = detected;
-    logger.info(`[zip-launcher] Detected ${type}: "${name}" (folder: ${folder})`);
+    const { components, demoContentEntries, prefix } = bundle;
+    const componentSummary = components.map((c) => `${c.type}:${c.name}`).join(', ');
+    logger.info(`[zip-launcher] Detected ${components.length} component(s): ${componentSummary}`);
 
-    // --- Collision detection -----------------------------------------------
-    const collidingSite = findCollidingSite(type, folder);
+    // --- Collision detection ---
+    const collidingSite = findCollidingSite(components);
     if (collidingSite) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { response } = await dialog.showMessageBox((global as any).mainWindow || undefined, {
         type: 'question',
         title: 'Already installed',
-        message: `"${name}" is already installed on ${collidingSite.name}.`,
+        message: components.length > 1
+          ? `Components from this bundle are already installed on ${collidingSite.name}.`
+          : `"${components[0].name}" is already installed on ${collidingSite.name}.`,
         detail: 'Update it there, or create a new site?',
         buttons: ['Update existing', 'Create new site', 'Cancel'],
         defaultId: 0,
@@ -340,7 +407,6 @@ export default function zipLauncher(context: AddonContext): void {
         }
 
         if (!isSiteRunning(collidingSite)) {
-          logger.info(`[zip-launcher] Starting "${collidingSite.name}"...`);
           sendToRenderer('updateSiteMessage', collidingSite.id, `Starting ${collidingSite.name}…`);
           try {
             await cradle.siteProcessManager.start(collidingSite);
@@ -358,26 +424,48 @@ export default function zipLauncher(context: AddonContext): void {
           }
         }
 
-        const cmd = type === 'theme' ? 'theme' : 'plugin';
-        let updateSucceeded = false;
+        // Update: extract-then-activate for bundles; --force for single-component zips.
+        const zip = await openZip(filePath);
         try {
-          sendToRenderer('updateSiteMessage', collidingSite.id, `Updating ${name}…`);
-          await cradle.wpCli.run(collidingSite, [cmd, 'install', filePath, '--force']);
-          logger.info(`[zip-launcher] Updated ${type} "${name}" on "${collidingSite.name}"`);
-          updateSucceeded = true;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error(`[zip-launcher] --force update failed: ${message}`);
-          sendToRenderer('showToast', {
-            toastTrigger: 'import',
-            toastType: 'error',
-            message: `Couldn't update "${name}": ${message}`,
-          });
+          for (const component of components) {
+            const subdir = component.type === 'theme' ? 'themes' : 'plugins';
+            const destParent = path.join(collidingSite.longPath, 'app', 'public', 'wp-content', subdir);
+            sendToRenderer('updateSiteMessage', collidingSite.id, `Updating ${component.name}…`);
+
+            if (components.length > 1) {
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                extractZipFolderSync(zip as any, prefix, component.folder, destParent);
+                await cradle.wpCli.run(collidingSite, [component.type, 'activate', component.folder]);
+                logger.info(`[zip-launcher] Updated ${component.type} "${component.name}"`);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                sendToRenderer('showToast', {
+                  toastTrigger: 'import',
+                  toastType: 'error',
+                  message: `Couldn't update "${component.name}": ${message}`,
+                });
+              }
+            } else {
+              try {
+                await cradle.wpCli.run(collidingSite, [component.type, 'install', filePath, '--force']);
+                logger.info(`[zip-launcher] Updated ${component.type} "${component.name}" via --force`);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                sendToRenderer('showToast', {
+                  toastTrigger: 'import',
+                  toastType: 'error',
+                  message: `Couldn't update "${component.name}": ${message}`,
+                });
+              }
+            }
+          }
+        } finally {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (zip as any).close();
         }
 
-        if (updateSucceeded) {
-          await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
-        }
+        await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
         sendToRenderer('updateSiteMessage', collidingSite.id, null);
         sendToRenderer('goToRoute', `/main/site-info/${collidingSite.id}/overview`);
         return { ok: true };
@@ -386,10 +474,11 @@ export default function zipLauncher(context: AddonContext): void {
       logger.info('[zip-launcher] User chose to create a new site despite collision');
     }
 
-    // --- Create new site ---------------------------------------------------
+    // --- Create new site ---
+    const baseSlug = slugBundleName(components);
     let slug: string;
     try {
-      slug = getUniqueSlug(slugify(name), getExistingSiteNames());
+      slug = getUniqueSlug(baseSlug, getExistingSiteNames());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { error: message };
@@ -398,7 +487,7 @@ export default function zipLauncher(context: AddonContext): void {
     const sitePath = path.join(getSitesDir(), slug);
     const adminPassword = crypto.randomBytes(8).toString('hex');
 
-    setPendingZip({ filePath, type, name, folder, expectedSiteName: slug, demoContentEntries });
+    setPendingZip({ filePath, components, prefix, expectedSiteName: slug, demoContentEntries });
 
     ipcMain.emit('addSite', {}, {
       newSiteInfo: {
@@ -416,7 +505,7 @@ export default function zipLauncher(context: AddonContext): void {
       installWP: true,
     });
 
-    logger.info(`[zip-launcher] addSite emitted for "${slug}"`);
+    logger.info(`[zip-launcher] addSite emitted for "${slug}" (${components.length} component(s))`);
     return { ok: true };
   });
 }

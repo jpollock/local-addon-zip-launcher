@@ -74,6 +74,11 @@ describe('parseHeader', () => {
 		const css = `Theme Name: Clean   `;
 		expect(parseHeader(css, 'Theme Name')).toBe('Clean');
 	});
+
+	test('parses PHPDoc-style header with leading asterisk (WordPress.org format)', () => {
+		const php = ` * Plugin Name:       Advanced Custom Fields`;
+		expect(parseHeader(php, 'Plugin Name')).toBe('Advanced Custom Fields');
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "name": "local-addon-zip-launcher",
   "productName": "Zip Launcher",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Drop a theme or plugin zip anywhere in Local to create a site with it installed and activated.",
   "main": "main.js",
   "renderer": "renderer.js",
@@ -11,6 +11,24 @@
     "node": ">=18"
   },
   "dependencies": {
-    "node-stream-zip": "^1.15.0"
-  }
+    "node-stream-zip": "1.15.0"
+  },
+  "bundledDependencies": [
+    "node-stream-zip"
+  ],
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
+  },
+  "bundleDependencies": [
+    "node-stream-zip"
+  ]
 }

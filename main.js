@@ -1,125 +1,53 @@
 'use strict';
 
 const { ipcMain } = require('electron');
+const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
-const StreamZip = require('node-stream-zip');
+const { validateFilePath, analyzeZip, slugify, getUniqueSlug } = require('./lib/zip-analyzer');
 
-// Pending zip — set by renderer before addSite fires, cleared after hook runs.
+// ---------------------------------------------------------------------------
+// Pending zip state — set atomically before ipcMain.emit('addSite'), cleared
+// by the wordPressInstaller:standardInstall hook or by a 5-minute TTL.
+// ---------------------------------------------------------------------------
+
 let pendingZip = null;
+let pendingZipTimer = null;
 
-// ---------------------------------------------------------------------------
-// Zip analysis helpers
-// ---------------------------------------------------------------------------
-
-// Use the callback-based StreamZip API (same as flywheel-local's own importer).
-// StreamZip.async has proven unreliable in Local's Electron environment.
-function openZip(filePath) {
-	return new Promise((resolve, reject) => {
-		const zip = new StreamZip({ file: filePath, storeEntries: true });
-		zip.on('ready', () => resolve(zip));
-		zip.on('error', reject);
-	});
+function clearPendingZip() {
+	if (pendingZipTimer) { clearTimeout(pendingZipTimer); pendingZipTimer = null; }
+	pendingZip = null;
 }
 
-function readEntryText(zip, entryName, maxBytes = 8192) {
-	return new Promise((resolve, reject) => {
-		zip.stream(entryName, (err, stream) => {
-			if (err) return reject(err);
-			const chunks = [];
-			let total = 0;
-			let settled = false;
-
-			const done = () => {
-				if (settled) return;
-				settled = true;
-				resolve(Buffer.concat(chunks).toString('utf8', 0, maxBytes));
-			};
-
-			stream.on('data', (chunk) => {
-				chunks.push(chunk);
-				total += chunk.length;
-				if (total >= maxBytes) {
-					done();
-					stream.destroy();
-				}
-			});
-			stream.on('end', done);
-			stream.on('close', done);
-			stream.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
-		});
-	});
-}
-
-function parseHeader(text, key) {
-	const match = text.match(new RegExp(`^[ \\t]*${key}[ \\t]*:[ \\t]*(.+)$`, 'm'));
-	return match ? match[1].trim() : null;
-}
-
-async function analyzeZip(filePath) {
-	const zip = await openZip(filePath);
-	try {
-		const names = Object.keys(zip.entries());
-
-		// Only look one folder deep.
-		const shallow = names.filter((n) => n.split('/').filter(Boolean).length <= 2);
-
-		// Theme: style.css with "Theme Name:" header
-		const styleCss = shallow.find((n) => {
-			const parts = n.split('/').filter(Boolean);
-			return parts[parts.length - 1] === 'style.css';
-		});
-		if (styleCss) {
-			const text = await readEntryText(zip, styleCss);
-			const name = parseHeader(text, 'Theme Name');
-			if (name) return { type: 'theme', name };
+function setPendingZip(data) {
+	clearPendingZip();
+	pendingZip = data;
+	pendingZipTimer = setTimeout(() => {
+		if (pendingZip) {
+			// If TTL fires it means site creation never completed — clear stale state.
+			pendingZip = null;
+			pendingZipTimer = null;
 		}
-
-		// Plugin: PHP file with "Plugin Name:" header
-		const phpFiles = shallow.filter((n) => n.endsWith('.php'));
-		for (const phpFile of phpFiles) {
-			const text = await readEntryText(zip, phpFile);
-			const name = parseHeader(text, 'Plugin Name');
-			if (name) return { type: 'plugin', name };
-		}
-
-		return null;
-	} finally {
-		zip.close();
-	}
-}
-
-function slugify(name) {
-	return name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-+|-+$/g, '');
-}
-
-function getUniqueSlug(base, existingNames) {
-	if (!existingNames.has(base)) return base;
-	for (let i = 2; i <= 99; i++) {
-		const candidate = `${base}-${i}`;
-		if (!existingNames.has(candidate)) return candidate;
-	}
-	throw new Error(`Could not find a unique name for "${base}" after 99 attempts.`);
+	}, 5 * 60 * 1000);
 }
 
 // ---------------------------------------------------------------------------
-// Optional service container access — fails gracefully
+// Service container — lazy, cached after first successful resolution.
 // ---------------------------------------------------------------------------
 
-function tryGetServiceContainer() {
+let _cradle = null;
+
+function getCradle() {
+	if (_cradle) return _cradle;
 	try {
 		const LocalMain = require('@getflywheel/local/main');
-		return LocalMain.getServiceContainer().cradle;
-	} catch (_) {
-		return null;
-	}
+		_cradle = LocalMain.getServiceContainer().cradle;
+	} catch (_) {}
+	return _cradle;
 }
 
 function getSitesDir() {
-	const cradle = tryGetServiceContainer();
+	const cradle = getCradle();
 	if (cradle) {
 		try {
 			const raw = cradle.userData.get('settings.sitesPath') || '~/Local Sites/';
@@ -130,7 +58,7 @@ function getSitesDir() {
 }
 
 function getExistingSiteNames() {
-	const cradle = tryGetServiceContainer();
+	const cradle = getCradle();
 	if (cradle) {
 		try {
 			const sites = Object.values(cradle.siteData.getSites());
@@ -140,10 +68,14 @@ function getExistingSiteNames() {
 	return new Set();
 }
 
-// Send a message to the renderer via Local's global mainWindow.
+// ---------------------------------------------------------------------------
+// Renderer messaging — guard against destroyed window.
+// ---------------------------------------------------------------------------
+
 function sendToRenderer(channel, ...args) {
-	if (global.mainWindow) {
-		global.mainWindow.webContents.send(channel, ...args);
+	const win = global.mainWindow;
+	if (win && !win.isDestroyed()) {
+		win.webContents.send(channel, ...args);
 	}
 }
 
@@ -161,54 +93,47 @@ module.exports = function zipLauncher(context) {
 		if (site.name !== pendingZip.expectedSiteName) return;
 
 		const { filePath, type, name } = pendingZip;
-		pendingZip = null;
+		clearPendingZip();
 
 		logger.info(`[zip-launcher] Post-install: installing ${type} "${name}" on "${site.name}"`);
 
-		const cradle = tryGetServiceContainer();
+		const cradle = getCradle();
 		if (!cradle || !cradle.wpCli) {
-			logger.warn('[zip-launcher] wpCli not available — cannot activate zip');
+			logger.warn('[zip-launcher] wpCli not available');
 			sendToRenderer('showToast', {
 				toastType: 'error',
-				message: `Couldn't activate "${name}" — WP-CLI unavailable. Install it manually from WordPress admin. Zip at: ${filePath}`,
+				message: `Couldn't activate "${name}" — WP-CLI unavailable. Install manually from WP admin.`,
 			});
 			sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 			return;
 		}
 
 		try {
-			if (type === 'theme') {
-				await cradle.wpCli.run(site, ['theme', 'install', filePath, '--activate']);
-			} else {
-				await cradle.wpCli.run(site, ['plugin', 'install', filePath, '--activate']);
-			}
+			const cmd = type === 'theme' ? 'theme' : 'plugin';
+			await cradle.wpCli.run(site, [cmd, 'install', filePath, '--activate']);
+			logger.info(`[zip-launcher] Installed and activated ${type} "${name}"`);
 			sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 		} catch (err) {
 			logger.error('[zip-launcher] WP-CLI install failed', err);
 			sendToRenderer('showToast', {
 				toastType: 'error',
-				message: `Couldn't install "${name}". Zip at: ${filePath} — install manually from WordPress admin.`,
+				message: `Couldn't install "${name}". Install manually from WP admin. Zip: ${filePath}`,
 			});
 			sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 		}
 	});
 
-	// --- IPC: store pending zip state ----------------------------------------
-	// Called by the renderer immediately before it sends 'addSite'.
-	ipcMain.on('zip-launcher:set-pending', (_event, data) => {
-		logger.info(`[zip-launcher] Pending: ${data.type} "${data.name}" → site "${data.siteName}"`);
-		pendingZip = {
-			filePath: data.filePath,
-			type: data.type,
-			name: data.name,
-			expectedSiteName: data.siteName,
-		};
-	});
+	// --- IPC: single atomic handler ------------------------------------------
+	// Renderer sends one invoke; main process does everything: analyze, validate,
+	// set pending state, and emit addSite — all before returning to the renderer.
+	ipcMain.handle('zip-launcher:process', async (_event, data) => {
+		// Validate input
+		const filePath = data && data.filePath;
+		if (!validateFilePath(filePath)) {
+			logger.warn(`[zip-launcher] Invalid file path rejected: ${filePath}`);
+			return { error: 'Invalid file path.' };
+		}
 
-	// --- IPC: analyze zip ----------------------------------------------------
-	// Renderer calls this, gets back detection result + site creation params.
-	// No service container needed for the analysis itself.
-	ipcMain.handle('zip-launcher:analyze', async (_event, { filePath }) => {
 		logger.info(`[zip-launcher] Analyzing: ${filePath}`);
 
 		let detected;
@@ -225,19 +150,41 @@ module.exports = function zipLauncher(context) {
 		}
 
 		const { type, name } = detected;
-		const base = slugify(name);
-		const existingNames = getExistingSiteNames();
+		logger.info(`[zip-launcher] Detected ${type}: "${name}"`);
 
 		let slug;
 		try {
-			slug = getUniqueSlug(base, existingNames);
+			slug = getUniqueSlug(slugify(name), getExistingSiteNames());
 		} catch (err) {
 			return { error: err.message };
 		}
 
 		const sitePath = path.join(getSitesDir(), slug);
+		const adminPassword = crypto.randomBytes(8).toString('hex');
 
-		logger.info(`[zip-launcher] Detected ${type}: "${name}" → slug "${slug}"`);
-		return { type, name, slug, sitePath };
+		// Set pending zip atomically before emitting addSite.
+		setPendingZip({ filePath, type, name, expectedSiteName: slug });
+
+		// Trigger Local's existing addSite IPC handler from the main process.
+		// AddSiteService.listen() registers ipcMain.on('addSite', (event, args) => this.addSite(args)).
+		// The handler only uses args, not event, so an empty event object is safe.
+		ipcMain.emit('addSite', {}, {
+			newSiteInfo: {
+				siteName: slug,
+				sitePath,
+				siteDomain: `${slug}.local`,
+				multiSite: '', // Local.MultiSite.No = ''
+			},
+			wpCredentials: {
+				adminUsername: 'admin',
+				adminPassword,
+				adminEmail: 'admin@example.com',
+			},
+			goToSite: false,
+			installWP: true,
+		});
+
+		logger.info(`[zip-launcher] addSite emitted for "${slug}"`);
+		return { ok: true };
 	});
 };

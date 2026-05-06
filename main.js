@@ -1,6 +1,6 @@
 'use strict';
 
-const { ipcMain } = require('electron');
+const { ipcMain, dialog } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
@@ -109,13 +109,13 @@ async function importDemoContent(filePath, demoContentEntries, site, wpCli, logg
 	const { openZip } = require('./lib/zip-analyzer');
 	const zip = await openZip(filePath);
 	try {
+		await wpCli.run(site, ['plugin', 'install', 'wordpress-importer', '--activate']);
 		for (const entry of demoContentEntries) {
 			const tmpFile = path.join(os.tmpdir(), `zip-launcher-${crypto.randomBytes(4).toString('hex')}.xml`);
 			let succeeded = false;
 			try {
 				const data = zip.entryDataSync(entry);
 				fs.writeFileSync(tmpFile, data);
-				await wpCli.run(site, ['plugin', 'install', 'wordpress-importer', '--activate']);
 				await wpCli.run(site, ['import', tmpFile, '--authors=create']);
 				succeeded = true;
 				logger.info(`[zip-launcher] Imported demo content: ${entry}`);
@@ -176,10 +176,12 @@ module.exports = function zipLauncher(context) {
 			return;
 		}
 
+		let installSucceeded = false;
 		try {
 			const cmd = type === 'theme' ? 'theme' : 'plugin';
 			await cradle.wpCli.run(site, [cmd, 'install', filePath, '--activate']);
 			logger.info(`[zip-launcher] Installed and activated ${type} "${name}"`);
+			installSucceeded = true;
 		} catch (err) {
 			logger.error('[zip-launcher] WP-CLI install failed', err);
 			sendToRenderer('showToast', {
@@ -188,7 +190,9 @@ module.exports = function zipLauncher(context) {
 			});
 		}
 
-		await importDemoContent(filePath, demoContentEntries || [], site, cradle.wpCli, logger);
+		if (installSucceeded) {
+			await importDemoContent(filePath, demoContentEntries || [], site, cradle.wpCli, logger);
+		}
 		sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 	});
 
@@ -196,8 +200,6 @@ module.exports = function zipLauncher(context) {
 	// Renderer sends one invoke; main process does everything: analyze, validate,
 	// set pending state, and emit addSite — all before returning to the renderer.
 	ipcMain.handle('zip-launcher:process', async (_event, data) => {
-		const { dialog } = require('electron');
-
 		const filePath = data && data.filePath;
 		if (!validateFilePath(filePath)) {
 			logger.warn(`[zip-launcher] Invalid file path rejected: ${filePath}`);
@@ -225,7 +227,7 @@ module.exports = function zipLauncher(context) {
 		// --- Collision detection ---------------------------------------------------
 		const collidingSite = findCollidingSite(type, folder);
 		if (collidingSite) {
-			const { response } = await dialog.showMessageBox({
+			const { response } = await dialog.showMessageBox(global.mainWindow || undefined, {
 				type: 'question',
 				title: 'Already installed',
 				message: `"${name}" is already installed on ${collidingSite.name}.`,
@@ -272,7 +274,7 @@ module.exports = function zipLauncher(context) {
 					});
 				}
 
-				await importDemoContent(filePath, demoContentEntries, collidingSite, cradle.wpCli, logger);
+				await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
 				sendToRenderer('goToRoute', `/main/site-info/${collidingSite.id}/overview`);
 				return { ok: true };
 			}

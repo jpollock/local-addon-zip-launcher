@@ -1,0 +1,16 @@
+{
+  "name": "local-addon-zip-launcher",
+  "productName": "Zip Launcher",
+  "version": "1.0.0",
+  "description": "Drop a theme or plugin zip anywhere in Local to create a site with it installed and activated.",
+  "main": "main.js",
+  "renderer": "renderer.js",
+  "author": "Jeremy Pollock",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "node-stream-zip": "^1.15.0"
+  }
+}

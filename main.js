@@ -263,9 +263,11 @@ module.exports = function zipLauncher(context) {
 				}
 
 				const cmd = type === 'theme' ? 'theme' : 'plugin';
+				let updateSucceeded = false;
 				try {
 					await cradle.wpCli.run(collidingSite, [cmd, 'install', filePath, '--force']);
 					logger.info(`[zip-launcher] Updated ${type} "${name}" on "${collidingSite.name}"`);
+					updateSucceeded = true;
 				} catch (err) {
 					logger.error(`[zip-launcher] --force update failed: ${err.message}`);
 					sendToRenderer('showToast', {
@@ -274,7 +276,9 @@ module.exports = function zipLauncher(context) {
 					});
 				}
 
-				await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
+				if (updateSucceeded) {
+					await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
+				}
 				sendToRenderer('goToRoute', `/main/site-info/${collidingSite.id}/overview`);
 				return { ok: true };
 			}

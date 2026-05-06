@@ -99,7 +99,7 @@ Unchanged. WXR scan uses the raw (pre-strip) names at depth ≤ 3, so `wp/marksh
 
 ### Collision detection
 
-`findCollidingSite` checks each component's folder against `wp-content/themes` or `wp-content/plugins`. First match triggers the dialog. On "Update existing," all components are updated on that site using `wp {type} install --force` (current zip-install approach still works for single-component updates; for bundles, use the extract-then-activate pattern).
+`findCollidingSite` checks each component's folder against `wp-content/themes` or `wp-content/plugins`. First match triggers the dialog. On "Update existing," all components are updated using the same extract-then-activate pattern: extract each component folder into `wp-content/{themes|plugins}/`, overwriting existing files, then `wp {type} activate {folder}`. Single-component zips on the update path continue to use `wp {type} install {filePath} --force` (unchanged, since they have a single zip the WP-CLI can consume directly).
 
 ---
 

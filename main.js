@@ -12,6 +12,16 @@ let pendingZip = null;
 // Zip analysis helpers
 // ---------------------------------------------------------------------------
 
+// Use the callback-based StreamZip API (same as flywheel-local's own importer).
+// StreamZip.async has proven unreliable in Local's Electron environment.
+function openZip(filePath) {
+	return new Promise((resolve, reject) => {
+		const zip = new StreamZip({ file: filePath, storeEntries: true });
+		zip.on('ready', () => resolve(zip));
+		zip.on('error', reject);
+	});
+}
+
 function readEntryText(zip, entryName, maxBytes = 8192) {
 	return new Promise((resolve, reject) => {
 		zip.stream(entryName, (err, stream) => {
@@ -30,17 +40,13 @@ function readEntryText(zip, entryName, maxBytes = 8192) {
 				chunks.push(chunk);
 				total += chunk.length;
 				if (total >= maxBytes) {
-					// Resolve immediately — don't rely on stream.destroy() emitting
-					// 'end' or 'close', which node-stream-zip may not do reliably.
 					done();
 					stream.destroy();
 				}
 			});
 			stream.on('end', done);
 			stream.on('close', done);
-			stream.on('error', (e) => {
-				if (!settled) { settled = true; reject(e); }
-			});
+			stream.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
 		});
 	});
 }
@@ -51,10 +57,9 @@ function parseHeader(text, key) {
 }
 
 async function analyzeZip(filePath) {
-	const zip = new StreamZip.async({ file: filePath });
+	const zip = await openZip(filePath);
 	try {
-		const entries = await zip.entries();
-		const names = Object.keys(entries);
+		const names = Object.keys(zip.entries());
 
 		// Only look one folder deep.
 		const shallow = names.filter((n) => n.split('/').filter(Boolean).length <= 2);
@@ -70,11 +75,8 @@ async function analyzeZip(filePath) {
 			if (name) return { type: 'theme', name };
 		}
 
-		// Plugin: root-level PHP file with "Plugin Name:" header
-		const phpFiles = shallow.filter((n) => {
-			const parts = n.split('/').filter(Boolean);
-			return parts.length <= 2 && parts[parts.length - 1].endsWith('.php');
-		});
+		// Plugin: PHP file with "Plugin Name:" header
+		const phpFiles = shallow.filter((n) => n.endsWith('.php'));
 		for (const phpFile of phpFiles) {
 			const text = await readEntryText(zip, phpFile);
 			const name = parseHeader(text, 'Plugin Name');
@@ -83,7 +85,7 @@ async function analyzeZip(filePath) {
 
 		return null;
 	} finally {
-		await zip.close();
+		zip.close();
 	}
 }
 

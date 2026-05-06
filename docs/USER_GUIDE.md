@@ -25,14 +25,77 @@ Non-theme/plugin zips (site backups, etc.) are passed through to Local's existin
 
 ---
 
-## Supported Zip Formats
+## Supported Zip Structures
 
-| Format | Detection method |
-|---|---|
-| WordPress theme | `style.css` containing `Theme Name:` at depth ≤ 2 in the zip |
-| WordPress plugin | Any `.php` file containing `Plugin Name:` at depth ≤ 2 in the zip |
-| WordPress.org downloads | Same as above — PHPDoc ` * Plugin Name:` style is supported |
-| Demo content | `.xml` file at depth ≤ 3 containing WXR markers (`<rss` + `xmlns:excerpt`) |
+Zip Launcher handles three zip shapes automatically.
+
+### Single theme or plugin
+
+The most common format. A single folder at the root of the zip:
+
+```
+my-theme.zip
+└── my-theme/
+    ├── style.css        ← must contain "Theme Name: My Theme"
+    └── ...
+
+my-plugin.zip
+└── my-plugin/
+    ├── my-plugin.php   ← must contain "Plugin Name: My Plugin"
+    └── ...
+```
+
+Files at the root with no folder also work:
+```
+my-theme.zip
+├── style.css            ← "Theme Name: My Theme"
+└── ...
+```
+
+### Bundle (theme + plugin together)
+
+A zip that contains both a plugin and a companion theme. They can live directly at the root or inside a common wrapper directory — the addon strips any shared prefix automatically:
+
+```
+my-product.zip
+├── my-plugin/
+│   └── my-plugin.php   ← "Plugin Name: My Plugin"
+└── my-theme/
+    └── style.css       ← "Theme Name: My Theme"
+
+my-product.zip           ← wrapper directory is stripped automatically
+└── wp/
+    ├── my-plugin/
+    │   └── my-plugin.php
+    └── my-theme/
+        └── style.css
+```
+
+Both components are installed on a single new site. Plugins are always activated before themes.
+
+### Demo content
+
+A WXR export file (WordPress eXporter XML) anywhere in the zip at up to three directory levels deep:
+
+```
+my-theme.zip
+└── my-theme/
+    ├── style.css
+    └── demo/
+        └── demo-content.xml   ← imported automatically after activation
+```
+
+### Header formats
+
+Both simple and PHPDoc formats are detected:
+
+```css
+/* Simple */
+Theme Name: My Theme
+
+/* PHPDoc (WordPress.org style) */
+ * Theme Name: My Theme
+```
 
 ---
 
@@ -43,7 +106,7 @@ If you drop a zip whose theme/plugin folder already exists on a Local site, you'
 > **"PM Bulletin" is already installed on pm-bulletin.**
 > Update it there, or create a new site?
 
-- **Update existing** — If the site is stopped, it starts automatically. WP-CLI runs `wp theme install --force` (or `wp plugin install --force`) to update it. Demo content is imported if found.
+- **Update existing** — If the site is stopped, it starts automatically. The theme or plugin files are updated in place and re-activated. For bundles, all components are updated. Demo content is imported if found.
 - **Create new site** — Proceeds as normal, creating `pm-bulletin-2` (or the next available suffix).
 - **Cancel** — Nothing happens.
 
@@ -56,7 +119,7 @@ If you drop a zip whose theme/plugin folder already exists on a Local site, you'
 - **Manual install** — not yet available on the Local addon marketplace; install from GitHub Releases
 - **Admin password** — a random password is generated for each new site; you never need to type it because Local auto-logs you into WordPress admin
 - **Demo content requires internet** — `wordpress-importer` is downloaded from WordPress.org on first use
-- **Header depth limit** — theme/plugin detection only looks two directory levels deep in the zip
+- **Headers must be present** — the zip must contain a `style.css` with `Theme Name:` or a `.php` file with `Plugin Name:`; zips without these headers pass through to Local's existing import flow
 
 ---
 

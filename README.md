@@ -21,14 +21,22 @@ Drop any WordPress theme or plugin `.zip` anywhere in Local — a site appears w
 
 ## Installation
 
+### Method 1: Pre-built Release (Recommended)
+
 1. Go to the [Releases page](https://github.com/jpollock/local-addon-zip-launcher/releases)
 2. Download `local-addon-zip-launcher-0.3.0.tgz` from the latest release
-3. Extract it: `tar -xzf local-addon-zip-launcher-0.3.0.tgz`
-4. Move the extracted folder to your Local addons directory:
-   - **macOS:** `~/Library/Application Support/Local/addons/`
-   - **Windows:** `%APPDATA%\Local\addons\`
-   - **Linux:** `~/.config/Local/addons/`
-5. Restart Local
+3. Open **Local** → **Add-ons** → **Install from disk**
+4. Select the downloaded `.tgz` file and toggle it **ON**
+5. Click **Relaunch** when prompted
+
+### Method 2: Build from Source
+
+```bash
+git clone https://github.com/jpollock/local-addon-zip-launcher.git
+cd local-addon-zip-launcher
+npm install && npm run build && npm run install-addon
+# Then restart Local
+```
 
 ---
 

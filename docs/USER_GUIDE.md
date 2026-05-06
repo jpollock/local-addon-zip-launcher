@@ -62,13 +62,29 @@ If you drop a zip whose theme/plugin folder already exists on a Local site, you'
 
 ## Installing the Addon
 
-1. Go to the [Releases page](https://github.com/jpollock/local-addon-zip-launcher/releases)
-2. Download `local-addon-zip-launcher-X.Y.Z.tgz`
-3. Extract: `tar -xzf local-addon-zip-launcher-X.Y.Z.tgz`
-4. Move the extracted `package/` folder to your addons directory and rename it `local-addon-zip-launcher`:
-   - **macOS:** `~/Library/Application Support/Local/addons/local-addon-zip-launcher`
-   - **Windows:** `%APPDATA%\Local\addons\local-addon-zip-launcher`
-   - **Linux:** `~/.config/Local/addons/local-addon-zip-launcher`
-5. Restart Local
+### Method 1: Pre-built Release (Recommended)
 
-The addon loads automatically — no enable toggle required.
+The easiest way — no terminal required.
+
+1. Go to the [Releases page](https://github.com/jpollock/local-addon-zip-launcher/releases)
+2. Download `local-addon-zip-launcher-X.Y.Z.tgz` from the latest release
+3. Open **Local**
+4. Click **Add-ons** in the sidebar
+5. Click **Install from disk**
+6. Select the downloaded `.tgz` file
+7. Toggle the addon **ON**
+8. Click **Relaunch** when prompted
+
+### Method 2: Build from Source
+
+For developers and contributors.
+
+```bash
+git clone https://github.com/jpollock/local-addon-zip-launcher.git
+cd local-addon-zip-launcher
+npm install
+npm run build
+npm run install-addon
+```
+
+Then restart Local. The addon loads automatically — no enable toggle required.

@@ -21,6 +21,10 @@ module.exports = function zipLauncherRenderer(context) {
 		e.preventDefault();
 		e.stopPropagation();
 
+		// MainDragDrop adds the 'drag' class to #root for the overlay. Since we
+		// stopped propagation its onDrop never fires, so we clear it manually.
+		document.getElementById('root')?.classList.remove('drag');
+
 		const filePath = webUtils.getPathForFile(zipFile);
 
 		let result;

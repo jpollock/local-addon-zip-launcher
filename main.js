@@ -109,8 +109,10 @@ async function importDemoContent(filePath, demoContentEntries, site, wpCli, logg
 	const { openZip } = require('./lib/zip-analyzer');
 	const zip = await openZip(filePath);
 	try {
+		sendToRenderer('updateSiteMessage', site.id, 'Installing demo content importer…');
 		await wpCli.run(site, ['plugin', 'install', 'wordpress-importer', '--activate']);
 		for (const entry of demoContentEntries) {
+			sendToRenderer('updateSiteMessage', site.id, 'Importing demo content…');
 			const tmpFile = path.join(os.tmpdir(), `zip-launcher-${crypto.randomBytes(4).toString('hex')}.xml`);
 			let succeeded = false;
 			try {
@@ -180,6 +182,7 @@ module.exports = function zipLauncher(context) {
 		let installSucceeded = false;
 		try {
 			const cmd = type === 'theme' ? 'theme' : 'plugin';
+			sendToRenderer('updateSiteMessage', site.id, `Installing ${name}…`);
 			await cradle.wpCli.run(site, [cmd, 'install', filePath, '--activate']);
 			logger.info(`[zip-launcher] Installed and activated ${type} "${name}"`);
 			installSucceeded = true;
@@ -194,6 +197,7 @@ module.exports = function zipLauncher(context) {
 		if (installSucceeded) {
 			await importDemoContent(filePath, demoContentEntries || [], site, cradle.wpCli, logger);
 		}
+		sendToRenderer('updateSiteMessage', site.id, null);
 		sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 	});
 
@@ -256,11 +260,13 @@ module.exports = function zipLauncher(context) {
 
 				if (!isSiteRunning(collidingSite)) {
 					logger.info(`[zip-launcher] Starting "${collidingSite.name}"...`);
+					sendToRenderer('updateSiteMessage', collidingSite.id, `Starting ${collidingSite.name}…`);
 					try {
 						await cradle.siteProcessManager.start(collidingSite);
 						logger.info(`[zip-launcher] "${collidingSite.name}" started`);
 					} catch (err) {
 						logger.error(`[zip-launcher] Could not start site: ${err.message}`);
+						sendToRenderer('updateSiteMessage', collidingSite.id, null);
 						sendToRenderer('showToast', { toastTrigger: 'import',
 							toastType: 'error',
 							message: `Couldn't start "${collidingSite.name}". Start it manually and drop the zip again.`,
@@ -272,6 +278,7 @@ module.exports = function zipLauncher(context) {
 				const cmd = type === 'theme' ? 'theme' : 'plugin';
 				let updateSucceeded = false;
 				try {
+					sendToRenderer('updateSiteMessage', collidingSite.id, `Updating ${name}…`);
 					await cradle.wpCli.run(collidingSite, [cmd, 'install', filePath, '--force']);
 					logger.info(`[zip-launcher] Updated ${type} "${name}" on "${collidingSite.name}"`);
 					updateSucceeded = true;
@@ -286,6 +293,7 @@ module.exports = function zipLauncher(context) {
 				if (updateSucceeded) {
 					await importDemoContent(filePath, demoContentEntries || [], collidingSite, cradle.wpCli, logger);
 				}
+				sendToRenderer('updateSiteMessage', collidingSite.id, null);
 				sendToRenderer('goToRoute', `/main/site-info/${collidingSite.id}/overview`);
 				return { ok: true };
 			}

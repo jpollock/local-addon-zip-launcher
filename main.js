@@ -4,6 +4,7 @@ const { ipcMain } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const { validateFilePath, analyzeZip, slugify, getUniqueSlug } = require('./lib/zip-analyzer');
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,73 @@ function getExistingSiteNames() {
 	return new Set();
 }
 
+// Returns the first existing Local site that already has this theme/plugin installed,
+// or null if none found. Uses a synchronous filesystem check — works on stopped sites.
+function findCollidingSite(type, folder) {
+	const cradle = getCradle();
+	if (!cradle) return null;
+	const subdir = type === 'theme' ? 'themes' : 'plugins';
+	let sites;
+	try {
+		sites = Object.values(cradle.siteData.getSites());
+	} catch (_) {
+		return null;
+	}
+	for (const site of sites) {
+		const checkPath = path.join(site.longPath, 'app', 'public', 'wp-content', subdir, folder);
+		if (fs.existsSync(checkPath)) return site;
+	}
+	return null;
+}
+
+// Returns true if the site's services are running. Uses siteProcessManager from the
+// service container; falls back to checking for an nginx PID file.
+function isSiteRunning(site) {
+	const cradle = getCradle();
+	if (cradle && cradle.siteProcessManager) {
+		try {
+			return cradle.siteProcessManager.getSiteStatus(site) === 'running';
+		} catch (_) {}
+	}
+	// Fallback: nginx PID file exists when the site is running
+	return fs.existsSync(path.join(site.longPath, 'logs', 'nginx', 'nginx.pid'));
+}
+
+// Extracts WXR files from the zip, installs wordpress-importer, and imports them.
+// Leaves temp files on disk if import fails so the user can import manually.
+async function importDemoContent(filePath, demoContentEntries, site, wpCli, logger) {
+	if (!demoContentEntries.length) return;
+
+	const { openZip } = require('./lib/zip-analyzer');
+	const zip = await openZip(filePath);
+	try {
+		for (const entry of demoContentEntries) {
+			const tmpFile = path.join(os.tmpdir(), `zip-launcher-${crypto.randomBytes(4).toString('hex')}.xml`);
+			let succeeded = false;
+			try {
+				const data = zip.entryDataSync(entry);
+				fs.writeFileSync(tmpFile, data);
+				await wpCli.run(site, ['plugin', 'install', 'wordpress-importer', '--activate']);
+				await wpCli.run(site, ['import', tmpFile, '--authors=create']);
+				succeeded = true;
+				logger.info(`[zip-launcher] Imported demo content: ${entry}`);
+			} catch (err) {
+				logger.error(`[zip-launcher] Demo content import failed for ${entry}: ${err.message}`);
+				sendToRenderer('showToast', {
+					toastType: 'error',
+					message: `Demo content import failed. File saved at ${tmpFile} — import via WP Admin → Tools → Import.`,
+				});
+			} finally {
+				if (succeeded) {
+					try { fs.unlinkSync(tmpFile); } catch (_) {}
+				}
+			}
+		}
+	} finally {
+		zip.close();
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Renderer messaging — guard against destroyed window.
 // ---------------------------------------------------------------------------
@@ -92,7 +160,7 @@ module.exports = function zipLauncher(context) {
 		if (!pendingZip) return;
 		if (site.name !== pendingZip.expectedSiteName) return;
 
-		const { filePath, type, name } = pendingZip;
+		const { filePath, type, name, demoContentEntries } = pendingZip;
 		clearPendingZip();
 
 		logger.info(`[zip-launcher] Post-install: installing ${type} "${name}" on "${site.name}"`);
@@ -112,22 +180,24 @@ module.exports = function zipLauncher(context) {
 			const cmd = type === 'theme' ? 'theme' : 'plugin';
 			await cradle.wpCli.run(site, [cmd, 'install', filePath, '--activate']);
 			logger.info(`[zip-launcher] Installed and activated ${type} "${name}"`);
-			sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 		} catch (err) {
 			logger.error('[zip-launcher] WP-CLI install failed', err);
 			sendToRenderer('showToast', {
 				toastType: 'error',
 				message: `Couldn't install "${name}". Install manually from WP admin. Zip: ${filePath}`,
 			});
-			sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 		}
+
+		await importDemoContent(filePath, demoContentEntries || [], site, cradle.wpCli, logger);
+		sendToRenderer('goToRoute', `/main/site-info/${site.id}/overview`);
 	});
 
 	// --- IPC: single atomic handler ------------------------------------------
 	// Renderer sends one invoke; main process does everything: analyze, validate,
 	// set pending state, and emit addSite — all before returning to the renderer.
 	ipcMain.handle('zip-launcher:process', async (_event, data) => {
-		// Validate input
+		const { dialog } = require('electron');
+
 		const filePath = data && data.filePath;
 		if (!validateFilePath(filePath)) {
 			logger.warn(`[zip-launcher] Invalid file path rejected: ${filePath}`);
@@ -149,9 +219,69 @@ module.exports = function zipLauncher(context) {
 			return { passthrough: true };
 		}
 
-		const { type, name } = detected;
-		logger.info(`[zip-launcher] Detected ${type}: "${name}"`);
+		const { type, name, folder, demoContentEntries } = detected;
+		logger.info(`[zip-launcher] Detected ${type}: "${name}" (folder: ${folder})`);
 
+		// --- Collision detection ---------------------------------------------------
+		const collidingSite = findCollidingSite(type, folder);
+		if (collidingSite) {
+			const { response } = await dialog.showMessageBox({
+				type: 'question',
+				title: 'Already installed',
+				message: `"${name}" is already installed on ${collidingSite.name}.`,
+				detail: 'Update it there, or create a new site?',
+				buttons: ['Update existing', 'Create new site', 'Cancel'],
+				defaultId: 0,
+				cancelId: 2,
+			});
+
+			if (response === 2) {
+				logger.info('[zip-launcher] User cancelled');
+				return { ok: true };
+			}
+
+			if (response === 0) {
+				// Update existing site
+				if (!isSiteRunning(collidingSite)) {
+					logger.info(`[zip-launcher] Site "${collidingSite.name}" is not running`);
+					sendToRenderer('showToast', {
+						toastType: 'error',
+						message: `Start "${collidingSite.name}" first, then drop the zip again.`,
+					});
+					return { ok: true };
+				}
+
+				const cradle = getCradle();
+				if (!cradle || !cradle.wpCli) {
+					sendToRenderer('showToast', {
+						toastType: 'error',
+						message: 'WP-CLI unavailable — cannot update.',
+					});
+					return { ok: true };
+				}
+
+				const cmd = type === 'theme' ? 'theme' : 'plugin';
+				try {
+					await cradle.wpCli.run(collidingSite, [cmd, 'install', filePath, '--force']);
+					logger.info(`[zip-launcher] Updated ${type} "${name}" on "${collidingSite.name}"`);
+				} catch (err) {
+					logger.error(`[zip-launcher] --force update failed: ${err.message}`);
+					sendToRenderer('showToast', {
+						toastType: 'error',
+						message: `Couldn't update "${name}": ${err.message}`,
+					});
+				}
+
+				await importDemoContent(filePath, demoContentEntries, collidingSite, cradle.wpCli, logger);
+				sendToRenderer('goToRoute', `/main/site-info/${collidingSite.id}/overview`);
+				return { ok: true };
+			}
+
+			// response === 1: "Create new site" — fall through to normal create flow
+			logger.info('[zip-launcher] User chose to create a new site despite collision');
+		}
+
+		// --- Create new site -------------------------------------------------------
 		let slug;
 		try {
 			slug = getUniqueSlug(slugify(name), getExistingSiteNames());
@@ -162,18 +292,14 @@ module.exports = function zipLauncher(context) {
 		const sitePath = path.join(getSitesDir(), slug);
 		const adminPassword = crypto.randomBytes(8).toString('hex');
 
-		// Set pending zip atomically before emitting addSite.
-		setPendingZip({ filePath, type, name, expectedSiteName: slug });
+		setPendingZip({ filePath, type, name, folder, expectedSiteName: slug, demoContentEntries });
 
-		// Trigger Local's existing addSite IPC handler from the main process.
-		// AddSiteService.listen() registers ipcMain.on('addSite', (event, args) => this.addSite(args)).
-		// The handler only uses args, not event, so an empty event object is safe.
 		ipcMain.emit('addSite', {}, {
 			newSiteInfo: {
 				siteName: slug,
 				sitePath,
 				siteDomain: `${slug}.local`,
-				multiSite: '', // Local.MultiSite.No = ''
+				multiSite: '',
 			},
 			wpCredentials: {
 				adminUsername: 'admin',

@@ -121,7 +121,7 @@ async function importDemoContent(filePath, demoContentEntries, site, wpCli, logg
 				logger.info(`[zip-launcher] Imported demo content: ${entry}`);
 			} catch (err) {
 				logger.error(`[zip-launcher] Demo content import failed for ${entry}: ${err.message}`);
-				sendToRenderer('showToast', {
+				sendToRenderer('showToast', { toastTrigger: 'import',
 					toastType: 'error',
 					message: `Demo content import failed. File saved at ${tmpFile} — import via WP Admin → Tools → Import.`,
 				});
@@ -168,7 +168,7 @@ module.exports = function zipLauncher(context) {
 		const cradle = getCradle();
 		if (!cradle || !cradle.wpCli) {
 			logger.warn('[zip-launcher] wpCli not available');
-			sendToRenderer('showToast', {
+			sendToRenderer('showToast', { toastTrigger: 'import',
 				toastType: 'error',
 				message: `Couldn't activate "${name}" — WP-CLI unavailable. Install manually from WP admin.`,
 			});
@@ -184,7 +184,7 @@ module.exports = function zipLauncher(context) {
 			installSucceeded = true;
 		} catch (err) {
 			logger.error('[zip-launcher] WP-CLI install failed', err);
-			sendToRenderer('showToast', {
+			sendToRenderer('showToast', { toastTrigger: 'import',
 				toastType: 'error',
 				message: `Couldn't install "${name}". Install manually from WP admin. Zip: ${filePath}`,
 			});
@@ -246,7 +246,7 @@ module.exports = function zipLauncher(context) {
 				// Update existing site
 				if (!isSiteRunning(collidingSite)) {
 					logger.info(`[zip-launcher] Site "${collidingSite.name}" is not running`);
-					sendToRenderer('showToast', {
+					sendToRenderer('showToast', { toastTrigger: 'import',
 						toastType: 'error',
 						message: `Start "${collidingSite.name}" first, then drop the zip again.`,
 					});
@@ -255,7 +255,7 @@ module.exports = function zipLauncher(context) {
 
 				const cradle = getCradle();
 				if (!cradle || !cradle.wpCli) {
-					sendToRenderer('showToast', {
+					sendToRenderer('showToast', { toastTrigger: 'import',
 						toastType: 'error',
 						message: 'WP-CLI unavailable — cannot update.',
 					});
@@ -270,7 +270,7 @@ module.exports = function zipLauncher(context) {
 					updateSucceeded = true;
 				} catch (err) {
 					logger.error(`[zip-launcher] --force update failed: ${err.message}`);
-					sendToRenderer('showToast', {
+					sendToRenderer('showToast', { toastTrigger: 'import',
 						toastType: 'error',
 						message: `Couldn't update "${name}": ${err.message}`,
 					});

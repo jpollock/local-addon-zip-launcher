@@ -34,6 +34,10 @@ describe('validateFilePath', () => {
 	test('is case-insensitive for the .zip extension', () => {
 		expect(validateFilePath('/Users/test/THEME.ZIP')).toBe(true);
 	});
+
+	test('accepts a path with .. as part of a name (not a segment)', () => {
+		expect(validateFilePath('/Users/elliot.andrews/Downloads/theme.zip')).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------

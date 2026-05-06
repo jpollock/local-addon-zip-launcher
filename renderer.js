@@ -1,46 +1,91 @@
 'use strict';
 
-module.exports = function zipLauncherRenderer(context) {
-	const { webUtils, ipcRenderer } = context.electron || require('electron');
+module.exports = function zipLauncherRenderer(_context) {
+	// Require electron directly — most reliable in Local's renderer context.
+	const electron = require('electron');
+	const ipcRenderer = electron.ipcRenderer;
+	const webUtils = electron.webUtils; // Electron 32+; may be undefined on older builds
 
-	const ipcAsync = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
-	const sendIPCEvent = (channel, ...args) => ipcRenderer.send(channel, ...args);
+	function showToast(message, toastType = 'error') {
+		ipcRenderer.send('showToast', { toastType, message });
+	}
 
-	function isZip(file) {
-		return file.name.toLowerCase().endsWith('.zip');
+	function getFilePath(file) {
+		if (webUtils && typeof webUtils.getPathForFile === 'function') {
+			return webUtils.getPathForFile(file);
+		}
+		// Older Electron: File object had a non-standard .path property.
+		return file.path || null;
 	}
 
 	async function onDrop(e) {
 		const files = Array.from(e.dataTransfer.files);
-		const zipFile = files.find(isZip);
+		const zipFile = files.find((f) => f.name.toLowerCase().endsWith('.zip'));
 
 		// Not a zip — let MainDragDrop handle it normally.
 		if (!zipFile) return;
 
-		// It's a zip — we take ownership.
+		// It's a zip — we own this drop.
 		e.preventDefault();
 		e.stopPropagation();
 
-		// MainDragDrop adds the 'drag' class to #root for the overlay. Since we
-		// stopped propagation its onDrop never fires, so we clear it manually.
+		// MainDragDrop adds 'drag' class but its onDrop never fires when we
+		// stopPropagation, so we clear it manually.
 		document.getElementById('root')?.classList.remove('drag');
 
-		const filePath = webUtils.getPathForFile(zipFile);
-
-		let result;
-		try {
-			result = await ipcAsync('zip-launcher:process', { filePath });
-		} catch (err) {
-			console.error('[zip-launcher] IPC error', err);
+		const filePath = getFilePath(zipFile);
+		if (!filePath) {
+			showToast('Zip Launcher: Could not read file path.');
 			return;
 		}
 
-		if (result && result.passthrough) {
-			// Not a theme/plugin zip — hand off to Local's import flow.
+		// Ask main process to analyze the zip (no service container needed there).
+		let result;
+		try {
+			result = await ipcRenderer.invoke('zip-launcher:analyze', { filePath });
+		} catch (err) {
+			console.error('[zip-launcher] analyze IPC failed:', err);
+			// Fall back to Local's normal import flow.
 			global.droppedFiles = [{ path: filePath, name: zipFile.name }];
-			sendIPCEvent('goToRoute', '/main/import-site-analyze');
+			ipcRenderer.send('goToRoute', '/main/import-site-analyze');
+			return;
 		}
-		// On success or error, main process drives navigation via sendIPCEvent.
+
+		if (result.error) {
+			showToast(`Zip Launcher: ${result.error}`);
+			return;
+		}
+
+		if (result.passthrough) {
+			// Not a theme or plugin — hand off to Local's existing import flow.
+			global.droppedFiles = [{ path: filePath, name: zipFile.name }];
+			ipcRenderer.send('goToRoute', '/main/import-site-analyze');
+			return;
+		}
+
+		const { type, name, slug, sitePath } = result;
+
+		// Store the pending zip in the main process BEFORE triggering addSite,
+		// so the wordPressInstaller:standardInstall hook can find it.
+		ipcRenderer.send('zip-launcher:set-pending', { filePath, type, name, siteName: slug });
+
+		// Trigger site creation through Local's existing IPC handler.
+		// Local's AddSiteService.listen() registers ipcMain.on('addSite', ...).
+		ipcRenderer.send('addSite', {
+			newSiteInfo: {
+				siteName: slug,
+				sitePath,
+				siteDomain: `${slug}.local`,
+				multiSite: 'no',
+			},
+			wpCredentials: {
+				adminUsername: 'admin',
+				adminPassword: 'admin',
+				adminEmail: 'admin@example.com',
+			},
+			goToSite: false,
+			installWP: true,
+		});
 	}
 
 	// Capture phase fires before MainDragDrop's bubble-phase listener on #root.

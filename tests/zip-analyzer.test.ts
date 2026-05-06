@@ -10,6 +10,7 @@ import {
   findWxrCandidates,
   slugify,
   getUniqueSlug,
+  stripCommonPrefix,
 } from '../src/lib/zip-analyzer';
 
 describe('validateFilePath', () => {
@@ -116,6 +117,63 @@ describe('findWxrCandidates', () => {
   });
   test('is case-insensitive for the .xml extension', () => {
     expect(findWxrCandidates(['theme/demo/CONTENT.XML'])).toEqual(['theme/demo/CONTENT.XML']);
+  });
+});
+
+describe('stripCommonPrefix', () => {
+  test('strips a single shared directory prefix', () => {
+    const { stripped, prefix } = stripCommonPrefix([
+      'wp/markshare-theme/style.css',
+      'wp/markshare/markshare.php',
+    ]);
+    expect(prefix).toBe('wp/');
+    expect(stripped).toEqual(['markshare-theme/style.css', 'markshare/markshare.php']);
+  });
+
+  test('strips a multi-level shared prefix', () => {
+    const { stripped, prefix } = stripCommonPrefix([
+      'release/v1/theme/style.css',
+      'release/v1/plugin/plugin.php',
+    ]);
+    expect(prefix).toBe('release/v1/');
+    expect(stripped).toEqual(['theme/style.css', 'plugin/plugin.php']);
+  });
+
+  test('returns no-op when there is no shared prefix', () => {
+    const { stripped, prefix } = stripCommonPrefix([
+      'theme/style.css',
+      'plugin/plugin.php',
+    ]);
+    expect(prefix).toBe('');
+    expect(stripped).toEqual(['theme/style.css', 'plugin/plugin.php']);
+  });
+
+  test('returns no-op for a single root-level file', () => {
+    const { stripped, prefix } = stripCommonPrefix(['style.css']);
+    expect(prefix).toBe('');
+    expect(stripped).toEqual(['style.css']);
+  });
+
+  test('handles an empty array', () => {
+    const { stripped, prefix } = stripCommonPrefix([]);
+    expect(prefix).toBe('');
+    expect(stripped).toEqual([]);
+  });
+
+  test('does not strip the entire path (preserves at least one segment)', () => {
+    const { stripped, prefix } = stripCommonPrefix(['wp/style.css', 'wp/functions.php']);
+    expect(prefix).toBe('wp/');
+    expect(stripped).toEqual(['style.css', 'functions.php']);
+  });
+
+  test('handles directory entries with trailing slash', () => {
+    const { stripped, prefix } = stripCommonPrefix([
+      'wp/',
+      'wp/markshare/markshare.php',
+      'wp/markshare-theme/style.css',
+    ]);
+    expect(prefix).toBe('wp/');
+    expect(stripped).toEqual(['', 'markshare/markshare.php', 'markshare-theme/style.css']);
   });
 });
 

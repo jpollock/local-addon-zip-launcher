@@ -8,11 +8,16 @@ const StreamZip = require('node-stream-zip');
 // Types
 // ---------------------------------------------------------------------------
 
-export interface ZipAnalysisResult {
+export interface ZipComponent {
   type: 'theme' | 'plugin';
   name: string;
-  folder: string;
-  demoContentEntries: string[];
+  folder: string; // WordPress folder name (post-strip), used as WP-CLI slug
+}
+
+export interface ZipBundle {
+  components: ZipComponent[]; // plugins first, then themes
+  demoContentEntries: string[]; // raw (pre-strip) zip entry names
+  prefix: string;              // common wrapper stripped during detection (e.g. 'wp/')
 }
 
 // node-stream-zip v1.x doesn't ship complete TypeScript types; use any for instances.
@@ -106,6 +111,34 @@ export function findWxrCandidates(names: string[]): string[] {
   );
 }
 
+/**
+ * Finds the longest common directory prefix across all zip entry names and returns
+ * both the stripped names and the prefix. Normalizes wrapper directories like `wp/`
+ * before theme/plugin detection.
+ */
+export function stripCommonPrefix(names: string[]): { stripped: string[]; prefix: string } {
+  if (names.length === 0) return { stripped: [], prefix: '' };
+
+  const segments = names.map((n) => n.split('/').filter(Boolean));
+
+  let prefixDepth = 0;
+  while (true) {
+    const firstSeg = segments[0]?.[prefixDepth];
+    if (!firstSeg) break;
+    if (!segments.every((segs) => segs[prefixDepth] === firstSeg)) break;
+    // Only treat this segment as a directory prefix if at least one entry has
+    // content beyond it (i.e. it's actually a wrapper directory, not a bare file).
+    if (!segments.some((segs) => segs.length > prefixDepth + 1)) break;
+    prefixDepth++;
+  }
+
+  if (prefixDepth === 0) return { stripped: names, prefix: '' };
+
+  const prefix = segments[0].slice(0, prefixDepth).join('/') + '/';
+  const stripped = names.map((n) => (n.startsWith(prefix) ? n.slice(prefix.length) : n));
+  return { stripped, prefix };
+}
+
 // ---------------------------------------------------------------------------
 // Demo content detection
 // ---------------------------------------------------------------------------
@@ -128,45 +161,64 @@ async function detectDemoContent(zip: StreamZipInstance, names: string[]): Promi
 // Zip detection
 // ---------------------------------------------------------------------------
 
-export async function analyzeZip(filePath: string): Promise<ZipAnalysisResult | null> {
+export async function analyzeZip(filePath: string): Promise<ZipBundle | null> {
   const zip = await openZip(filePath);
   try {
-    const names = Object.keys(zip.entries());
-    const folder = extractFolder(names);
+    const rawNames = Object.keys(zip.entries());
 
-    // Reject traversal entries, limit theme/plugin detection to depth ≤ 2.
-    const shallow = names.filter((n) =>
+    // Strip common wrapper prefix (e.g. 'wp/') before detection.
+    const { stripped, prefix } = stripCommonPrefix(rawNames);
+
+    // Post-strip: reject traversal and limit detection to depth ≤ 2.
+    const shallow = stripped.filter((n) =>
+      n.length > 0 &&
       !n.includes('..') &&
       !path.isAbsolute(n) &&
       n.split('/').filter(Boolean).length <= 2,
     );
 
-    // Theme: style.css with "Theme Name:" header
-    const styleCss = shallow.find((n) => {
+    const components: ZipComponent[] = [];
+    const detectedFolders = new Set<string>();
+
+    // --- Plugin detection (plugins first per install order) ---
+    const phpFiles = shallow.filter((n) => n.endsWith('.php'));
+    for (const phpFile of phpFiles) {
+      const rawEntry = prefix + phpFile;
+      const text = await readEntryText(zip, rawEntry);
+      const name = parseHeader(text, 'Plugin Name');
+      if (name) {
+        const folder = phpFile.split('/')[0];
+        if (!detectedFolders.has(folder)) {
+          detectedFolders.add(folder);
+          components.push({ type: 'plugin', name, folder });
+        }
+      }
+    }
+
+    // --- Theme detection ---
+    const styleCssFiles = shallow.filter((n) => {
       const parts = n.split('/').filter(Boolean);
       return parts[parts.length - 1] === 'style.css';
     });
-    if (styleCss) {
-      const text = await readEntryText(zip, styleCss);
+    for (const styleCss of styleCssFiles) {
+      const rawEntry = prefix + styleCss;
+      const text = await readEntryText(zip, rawEntry);
       const name = parseHeader(text, 'Theme Name');
       if (name) {
-        const demoContentEntries = await detectDemoContent(zip, names);
-        return { type: 'theme', name, folder, demoContentEntries };
+        const folder = styleCss.split('/')[0];
+        if (!detectedFolders.has(folder)) {
+          detectedFolders.add(folder);
+          components.push({ type: 'theme', name, folder });
+        }
       }
     }
 
-    // Plugin: PHP file with "Plugin Name:" header
-    const phpFiles = shallow.filter((n) => n.endsWith('.php'));
-    for (const phpFile of phpFiles) {
-      const text = await readEntryText(zip, phpFile);
-      const name = parseHeader(text, 'Plugin Name');
-      if (name) {
-        const demoContentEntries = await detectDemoContent(zip, names);
-        return { type: 'plugin', name, folder, demoContentEntries };
-      }
-    }
+    if (components.length === 0) return null;
 
-    return null;
+    // Demo content: scan raw (pre-strip) names — depth ≤ 3 reaches into wrappers.
+    const demoContentEntries = await detectDemoContent(zip, rawNames);
+
+    return { components, demoContentEntries, prefix };
   } finally {
     zip.close();
   }
@@ -191,3 +243,4 @@ export function getUniqueSlug(base: string, existingNames: Set<string>): string 
   }
   throw new Error(`Could not find a unique name for "${base}" after 99 attempts.`);
 }
+

@@ -116,7 +116,8 @@ async function importDemoContent(filePath, demoContentEntries, site, wpCli, logg
 			try {
 				const data = zip.entryDataSync(entry);
 				fs.writeFileSync(tmpFile, data);
-				await wpCli.run(site, ['import', tmpFile, '--authors=create']);
+				// skipPlugins must be false so wordpress-importer can load during import.
+				await wpCli.run(site, ['import', tmpFile, '--authors=create'], { skipPlugins: false });
 				succeeded = true;
 				logger.info(`[zip-launcher] Imported demo content: ${entry}`);
 			} catch (err) {

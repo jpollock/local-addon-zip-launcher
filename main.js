@@ -18,14 +18,29 @@ function readEntryText(zip, entryName, maxBytes = 8192) {
 			if (err) return reject(err);
 			const chunks = [];
 			let total = 0;
+			let settled = false;
+
+			const done = () => {
+				if (settled) return;
+				settled = true;
+				resolve(Buffer.concat(chunks).toString('utf8', 0, maxBytes));
+			};
+
 			stream.on('data', (chunk) => {
 				chunks.push(chunk);
 				total += chunk.length;
-				if (total >= maxBytes) stream.destroy();
+				if (total >= maxBytes) {
+					// Resolve immediately — don't rely on stream.destroy() emitting
+					// 'end' or 'close', which node-stream-zip may not do reliably.
+					done();
+					stream.destroy();
+				}
 			});
-			stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8', 0, maxBytes)));
-			stream.on('close', () => resolve(Buffer.concat(chunks).toString('utf8', 0, maxBytes)));
-			stream.on('error', reject);
+			stream.on('end', done);
+			stream.on('close', done);
+			stream.on('error', (e) => {
+				if (!settled) { settled = true; reject(e); }
+			});
 		});
 	});
 }

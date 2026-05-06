@@ -6,6 +6,21 @@ module.exports = function zipLauncherRenderer(_context) {
 	const ipcRenderer = electron.ipcRenderer;
 	const webUtils = electron.webUtils; // Electron 32+; may be undefined on older builds
 
+	// Navigate within Local's renderer — must go renderer→renderer via webContents.send,
+	// not renderer→main via ipcRenderer.send (main has no goToRoute handler).
+	function goToRoute(route) {
+		try {
+			const remote = require('@electron/remote');
+			const win = remote.getCurrentWindow();
+			if (win) {
+				win.webContents.send('goToRoute', route);
+				return;
+			}
+		} catch (_) {}
+		// Fallback: send to main and hope it forwards (unlikely but harmless)
+		ipcRenderer.send('goToRoute', route);
+	}
+
 	function showToast(message, toastType = 'error') {
 		ipcRenderer.send('showToast', { toastType, message });
 	}
@@ -60,7 +75,7 @@ module.exports = function zipLauncherRenderer(_context) {
 			console.error('[zip-launcher] analyze IPC failed:', err);
 			// Fall back to Local's normal import flow.
 			global.droppedFiles = [{ path: filePath, name: zipFile.name }];
-			ipcRenderer.send('goToRoute', '/main/import-site-analyze');
+			goToRoute('/main/import-site-analyze');
 			return;
 		}
 
@@ -72,7 +87,7 @@ module.exports = function zipLauncherRenderer(_context) {
 		if (result.passthrough) {
 			// Not a theme or plugin — hand off to Local's existing import flow.
 			global.droppedFiles = [{ path: filePath, name: zipFile.name }];
-			ipcRenderer.send('goToRoute', '/main/import-site-analyze');
+			goToRoute('/main/import-site-analyze');
 			return;
 		}
 

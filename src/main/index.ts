@@ -104,7 +104,9 @@ function getCradle(): ServiceCradle | null {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const LocalMain = require('@getflywheel/local/main');
     _cradle = LocalMain.getServiceContainer().cradle as ServiceCradle;
-  } catch (_) {}
+  } catch (_) {
+    // Local service container not available
+  }
   return _cradle;
 }
 
@@ -114,7 +116,9 @@ function getSitesDir(): string {
     try {
       const raw = cradle.userData.get('settings.sitesPath') || '~/Local Sites/';
       return raw.replace(/^~/, os.homedir()).replace(/\/$/, '');
-    } catch (_) {}
+    } catch (_) {
+      // Fall back to default sites directory
+    }
   }
   return path.join(os.homedir(), 'Local Sites');
 }
@@ -125,7 +129,9 @@ function getExistingSiteNames(): Set<string> {
     try {
       const sites = Object.values(cradle.siteData.getSites());
       return new Set(sites.map((s) => s.name));
-    } catch (_) {}
+    } catch (_) {
+      // Site data unavailable
+    }
   }
   return new Set();
 }
@@ -152,7 +158,9 @@ function isSiteRunning(site: LocalSite): boolean {
   if (cradle && cradle.siteProcessManager) {
     try {
       return cradle.siteProcessManager.getSiteStatus(site) === 'running';
-    } catch (_) {}
+    } catch (_) {
+      // Fallback to pid check below
+    }
   }
   return fs.existsSync(path.join(site.longPath, 'logs', 'nginx', 'nginx.pid'));
 }
@@ -208,7 +216,9 @@ async function importDemoContent(
         });
       } finally {
         if (succeeded) {
-          try { fs.unlinkSync(tmpFile); } catch (_) {}
+          try { fs.unlinkSync(tmpFile); } catch (_) {
+            // Cleanup best effort
+          }
         }
       }
     }

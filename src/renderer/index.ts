@@ -34,7 +34,9 @@ export default function zipLauncherRenderer(_context: AddonContext): void {
       const remote = require('@electron/remote');
       const win = remote.getCurrentWindow();
       if (win) { win.webContents.send('goToRoute', route); return; }
-    } catch (_) {}
+    } catch (_) {
+      // Fallback to ipcRenderer.send below
+    }
     ipcRenderer.send('goToRoute', route);
   }
 
@@ -72,7 +74,9 @@ export default function zipLauncherRenderer(_context: AddonContext): void {
         const dt = new DataTransfer();
         dt.items.add(new File([''], 'x'));
         root.dispatchEvent(new DragEvent('dragleave', { bubbles: true, dataTransfer: dt }));
-      } catch (_) {}
+      } catch (_) {
+        // DataTransfer not available — best effort cleanup
+      }
     }, 50);
 
     const filePath = getFilePath(zipFile);
